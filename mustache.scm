@@ -189,7 +189,6 @@
 
 (define (render tree context)
   (let loop ((elems tree) (rest '()) (current-context context))
-    (trace loop)
       (cond
         ((null? elems) (apply string-append (reverse rest)))
         ((text-node? (car elems))
@@ -208,18 +207,37 @@
                   (get-assoc (car elems) current-context) rest)
                 current-context)))))
 
-(define test-string (open-string "This is Great {{ #it-really-is }} {{ #i }} love to eat {{ eat }} its a great food {{ /i }} more {{ /it-really-is }} heh"))
+(define test-string
+  (open-string 
+"<html>
+    <head>
+        <title>{{ title }}</title>
+    </head>
+    <body>
+        <h1>{{ title }}</h1>
+        <ul>
+            {{ #list }}
+            <li>
+                {{ term }}: {{ description }}
+            </li>
+            {{ /list }}
+        </ul>
+    </body>
+</html>"))
 (define tree (parse test-string))
-(define context '((it-really-is 
-                    ((i 
-                       ((eat "never"))
-                       ((eat "friend"))
-                       )))))
+(define context
+  '((title "Fun languages")
+    (list 
+      ((term "Scheme")
+       (description "A great functional language"))
+      ((term "Python")
+       (description "A nice high level scripting language"))
+      ((term "Lua")
+       (description "A well thought out, fast, simple, embedded language")))
+    ))
 
 
-(render (parse (open-string "this is great!")) '())
-
-(render tree context)
+(print (render tree context))
 
 
 
