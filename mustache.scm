@@ -9,10 +9,12 @@
       (if (null? rfs)
         (f current)
         (loop (cdr rfs) ((car rfs) current))))))
+
 (define (reduce f lst)
   (let recur ((lst (cdr lst)) (acc (car lst)))
     (if (null? lst) acc
-      (recur (cdr lst) (f acc (car lst))))))
+      (recur (cdr lst) (f (car lst) acc)))))
+
 (define (filter f lst)
   (let recur ((lst lst) (acc '()))
     (cond
@@ -170,6 +172,54 @@
         (recur
           (cons (sread-until-char stream opening-tag) tree))))))
 
-(define test-string (open-string "This is Great {{ #it-really-is }} {{ #i }} love to {{ eat }}  {{ #dogshit }} is a great food {{ /dogshit }} {{ /i }} shit {{ /it-really-is }} heh"))
-(parse test-string)
+(define (get-assoc elem alist)
+  (cadr (assoc elem alist)))
+(define text-node? string?)
+(define section-node? pair?)
+
+(define (render-text text)
+  (return text))
+
+(define (render-section section context)
+  (let ((sofar 
+  (cond
+    ((null? section) (apply string-append
+    ((section-node?
+
+
+(define (render tree context)
+  (let loop ((elems tree) (rest '()) (current-context context))
+    (trace loop)
+      (cond
+        ((null? elems) (apply string-append (reverse rest)))
+        ((text-node? (car elems))
+         (loop (cdr elems) (cons (car elems) rest) current-context))
+        ((section-node? (car elems))
+         (loop (cdr elems)
+               (append 
+                 (reverse
+                   (map 
+                     (curry loop (cadar elems) '())
+                     (cdr (assoc (caar elems) current-context))))
+                 rest) current-context))
+        (else 
+          (loop (cdr elems)
+                (cons 
+                  (get-assoc (car elems) current-context) rest)
+                current-context)))))
+
+(define test-string (open-string "This is Great {{ #it-really-is }} {{ #i }} love to eat {{ eat }} its a great food {{ /i }} more {{ /it-really-is }} heh"))
+(define tree (parse test-string))
+(define context '((it-really-is 
+                    ((i 
+                       ((eat "never"))
+                       ((eat "friend"))
+                       )))))
+
+
+(render (parse (open-string "this is great!")) '())
+
+(render tree context)
+
+
 
