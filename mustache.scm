@@ -172,27 +172,22 @@
         (recur
           (cons (sread-until-char stream opening-tag) tree))))))
 
+(define self-node '|.|)
 (define (get-assoc elem alist)
   (cadr (assoc elem alist)))
 (define text-node? string?)
 (define section-node? pair?)
-
-(define (render-text text)
-  (return text))
-
-(define (render-section section context)
-  (let ((sofar 
-  (cond
-    ((null? section) (apply string-append
-    ((section-node?
-
+(define self-node? (curry eq? self-node))
 
 (define (render tree context)
   (let loop ((elems tree) (rest '()) (current-context context))
+    (trace loop)
       (cond
         ((null? elems) (apply string-append (reverse rest)))
         ((text-node? (car elems))
          (loop (cdr elems) (cons (car elems) rest) current-context))
+        ((self-node? (car elems))
+         (loop (cdr elems) (cons current-context rest) current-context))
         ((section-node? (car elems))
          (loop (cdr elems)
                (append 
@@ -222,6 +217,7 @@
             </li>
             {{ /list }}
         </ul>
+        {{ #names }}{{ . }}, {{ /names }}
     </body>
 </html>"))
 (define tree (parse test-string))
@@ -234,8 +230,8 @@
        (description "A nice high level scripting language"))
       ((term "Lua")
        (description "A well thought out, fast, simple, embedded language")))
+    (names "Frank" "John" "Peter")
     ))
-
 
 (print (render tree context))
 
