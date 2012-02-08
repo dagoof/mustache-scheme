@@ -1,6 +1,7 @@
 (load "~~/lib/syntax-case")
 
 (define (curry f . c) (lambda x (apply f (append c x))))
+(define (reverse-arguments f) (lambda a (apply f (reverse a))))
 (define (apply-f f . fs)
   (lambda x
     (let loop
@@ -21,6 +22,24 @@
       ((null? lst) (reverse acc))
       ((f (car lst)) (recur (cdr lst) (cons (car lst) acc)))
       (else (recur (cdr lst) acc)))))
+(define (any? f lst)
+  (cond
+    ((null? lst) #f)
+    ((f (car lst)) #t)
+    (else (any? f (cdr lst)))))
+(define (all? f lst)
+  (cond
+    ((null? lst) #t)
+    ((f (car lst)) (all? f (cdr lst)))
+    (else #f)))
+(define (alist? lst)
+  (all? pair? lst))
+
+(define-syntax case-cond
+  (syntax-rules
+    (else)
+    ((_ e (c r) ... (else d))
+     (cond ((c e) r) ... (else d)))))
 
 (define-syntax ->>
   (syntax-rules
@@ -39,6 +58,14 @@
          (if (null? rest)
            current
            (loop ((car rest) current) (cdr rest))))))))
+
+(define (truthy? term)
+  (case-cond term
+    (boolean? term)
+    (null? #f)
+    (else #t)))
+(define (falsy? term)
+  (not (truthy? term)))
 
 (define opening-tag #\{)
 (define closing-tag #\})
@@ -178,41 +205,82 @@
 (define text-node? string?)
 (define section-node? pair?)
 (define self-node? (curry eq? self-node))
+(define (make-list lst)
+  (if (list? lst)
+    lst
+    `((,self-node ,lst))))
+
+(define (get-alist-item fn alist)
+  (and
+    (list? alist)
+    (pair? (car alist))
+    (fn (car alist))))
+(define get-alist-key (curry get-alist-item car))
+(define get-alist-value (curry get-alist-item cadr))
+
+(define (get-alist-assoc fn key alist)
+  (and
+    (alist? alist)
+    (pair? (assoc key alist))
+    (fn (assoc key alist))))
+(define get-alist-avalue (curry get-alist-assoc cadr))
+
+(define get-alist-arest (curry get-alist-assoc cdr))
+
+
+(define (create-subcontext context key)
+  (map 
+    (curry (reverse-arguments append) context)
+    (map
+      make-list 
+      (filter 
+        truthy? 
+        (or (get-alist-arest key context) '())))))
 
 (define (render tree context)
   (let loop ((elems tree) (rest '()) (current-context context))
-    (trace loop)
-      (cond
-        ((null? elems) (apply string-append (reverse rest)))
-        ((text-node? (car elems))
-         (loop (cdr elems) (cons (car elems) rest) current-context))
-        ((self-node? (car elems))
-         (loop (cdr elems) (cons current-context rest) current-context))
-        ((section-node? (car elems))
-         (loop (cdr elems)
-               (append 
-                 (reverse
-                   (map 
-                     (curry loop (cadar elems) '())
-                     (cdr (assoc (caar elems) current-context))))
-                 rest) current-context))
-        (else 
-          (loop (cdr elems)
-                (cons 
-                  (get-assoc (car elems) current-context) rest)
-                current-context)))))
+    (if (falsy? elems)
+      (apply string-append (reverse rest))
+      (let ((node (car elems))
+            (remaining (cdr elems)))
+        (cond
+          ((text-node? node)
+           (loop remaining (cons node rest) current-context))
+          ((self-node? node)
+           (let ((self-value (get-alist-value current-context)))
+             (if self-value
+               (loop remaining (cons self-value rest) current-context)
+               (loop remaining rest current-context))))
+          ((section-node? node)
+           (let ((node-label (get-alist-key elems))
+                 (sub-elems (get-alist-value elems)))
+             (if (and node-label sub-elems)
+               (loop remaining
+                     (append
+                       (reverse
+                         (map (curry loop sub-elems '())
+                              (create-subcontext current-context node-label)))
+                       rest) current-context)
+               (loop remaining rest current-context))))
+           (else
+             (let ((node-value (get-alist-avalue node current-context)))
+               (if node-value
+                 (loop remaining (cons node-value rest) current-context)
+                 (loop remaining rest current-context)))))))))
 
 (define test-string
   (open-string 
 "<html>
     <head>
-        <title>{{ title }}</title>
+        <title>{{ title }} {{ john }}</title>
     </head>
     <body>
         <h1>{{ title }}</h1>
         <ul>
             {{ #list }}
             <li>
+                {{ sectionheaderer }}
+                {{ sectionheader }}
                 {{ term }}: {{ description }}
             </li>
             {{ /list }}
@@ -223,6 +291,7 @@
 (define tree (parse test-string))
 (define context
   '((title "Fun languages")
+    (sectionheader "Language")
     (list 
       ((term "Scheme")
        (description "A great functional language"))
@@ -235,5 +304,57 @@
 
 (print (render tree context))
 
+
+(define t2 
+  (parse (open-string "hello {{ #more }} {{ . }} {{ #sub }} {{ name }} {{ /sub }} {{ /more }} {{ label }}")))
+(define c2
+  '((label "maybe")
+    (more
+      "1" "2" "3")
+    (sub
+      ((name "a"))
+      ((name "b"))
+      ((name "c")))))
+
+(print (render t2 c2))
+
+(define t3 
+  (parse (open-string 
+"hello
+{{ #person }}
+{{ name }} 
+   {{ #friends }}
+   {{ count }}
+   {{ #person }}
+       {{ . }}
+   {{/person }}
+   {{/friends }}
+{{/person }}")))
+(define c3
+  '((person
+      ((name "rich")
+       (friends
+         ((count "2")
+          (person 
+            "frank"
+            "john"))))
+      ((name "ramin")
+       (friends
+         ((count "3")
+          (person
+            "goondor"
+            "menthol"
+            "birds"))))
+      ((name "shoe")
+       (friends
+         ((count "5")
+          (person
+            "laces"
+            "toes"
+            "frogpe"
+            "dogpe"
+            "jogpe")))))))
+
+(print (render t3 c3))
 
 
