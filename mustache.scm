@@ -22,11 +22,19 @@
       ((null? lst) (reverse acc))
       ((f (car lst)) (recur (cdr lst) (cons (car lst) acc)))
       (else (recur (cdr lst) acc)))))
+
 (define (any? f lst)
   (cond
     ((null? lst) #f)
     ((f (car lst)) #t)
     (else (any? f (cdr lst)))))
+
+(define (any-f? arg fs)
+  (cond
+    ((null? fs) #f)
+    (((car fs) arg) #t)
+    (else (any-f? arg (cdr fs)))))
+
 (define (all? f lst)
   (cond
     ((null? lst) #t)
@@ -70,12 +78,32 @@
 (define opening-tag #\{)
 (define closing-tag #\})
 
+(define section-delimiter #\#)
+(define partial-delimiter #\>)
+(define inverted-delimiter #\^)
+(define closing-delimiter #\/)
+(define (matches-delimiter? t) (lambda (o) (eq? t o)))
+(define section-delimiter? (matches-delimiter? section-delimiter))
+(define partial-delimiter? (matches-delimiter? partial-delimiter))
+(define inverted-delimiter? (matches-delimiter? inverted-delimiter))
+(define closing-delimiter? (matches-delimiter? closing-delimiter))
+(define get-tag-delimiter car)
+(define get-tag-label cdr)
+(define (matches-tag? t) 
+  (lambda (o)
+    (and (pair? o) (eq? t (get-tag-delimiter o)))))
+(define section-tag? (matches-tag? section-delimiter))
+(define partial-tag? (matches-tag? partial-delimiter))
+(define inverted-tag? (matches-tag? inverted-delimiter))
+(define closing-tag? (matches-tag? closing-delimiter))
+
+
+
 (define (strip-whitespace s)
   (->> s
        string->list
        (filter (apply-f not char-whitespace?))
        list->string))
-
 
 (define (stream-ready? stream)
   (char-ready? stream))
@@ -123,7 +151,7 @@
 (define (read-past-char stream char)
   (read-past stream (curry eq? char)))
 
-(define (classify-section-token stream token context)
+(define (classify-token token)
   (let ((tsymbol (string->symbol token))
         (first-char 
           (->> token
@@ -136,44 +164,14 @@
             cdr
             list->string
             string->symbol)))
-    (case first-char
-      ((#\#) (parse-section stream esymbol))
-      ((#\/) (if (eq? esymbol context)
-               #f
-               (raise "Interpolated closing tags")))
-      (else tsymbol))))
-
-(define (parse-section stream key)
-  (let recur ((tree '()))
-    (cond
-      ((not (stream-ready? stream)) (list key (reverse tree)))
-      ((at-opening-tag? stream)
-       (let ((tag (classify-section-token
-                    stream
-                    (parse-token stream) key)))
-         (if (not tag)
-           (list key (reverse tree))
-           (recur (cons tag tree)))))
-      (else 
-        (recur
-          (cons (sread-until-char stream opening-tag) tree))))))
-
-(define (classify-token stream token)
-  (let ((tsymbol (string->symbol token))
-        (first-char 
-          (->> token
-               string->list
-               car))
-        (esymbol
-          (->>
-            token
-            string->list
-            cdr
-            list->string
-            string->symbol)))
-    (case first-char
-      ((#\#) (parse-section stream esymbol))
-      (else tsymbol))))
+    (if (any-f? 
+          first-char
+          (list section-delimiter?
+                partial-delimiter?
+                inverted-delimiter?
+                closing-delimiter?))
+      (cons first-char esymbol)
+      tsymbol)))
 
 (define (parse-token stream)
   (begin
@@ -188,16 +186,30 @@
       (read-past-char stream closing-tag)
       token)))
 
-(define (parse stream)
+(define (parse-section stream key)
   (let recur ((tree '()))
     (cond
-      ((not (stream-ready? stream)) (reverse tree))
+      ((not (stream-ready? stream))
+       (if key 
+         (list key (reverse tree))
+         (reverse tree)))
       ((at-opening-tag? stream)
-       (recur
-         (cons (classify-token stream (parse-token stream)) tree)))
+       (let ((tag (classify-token (parse-token stream))))
+         (case-cond tag
+           (section-tag? 
+             (recur 
+               (cons (parse-section stream tag) tree)))
+           (closing-tag?
+             (if (eq? (get-tag-label tag) (get-tag-label key))
+               (list key (reverse tree))
+               (raise "Interpolated closing tags")))
+           (else (recur (cons tag tree))))))
       (else 
         (recur
           (cons (sread-until-char stream opening-tag) tree))))))
+
+(define (parse stream)
+  (parse-section stream #f))
 
 (define self-node '|.|)
 (define (get-assoc elem alist)
@@ -279,7 +291,6 @@
         <ul>
             {{ #list }}
             <li>
-                {{ sectionheaderer }}
                 {{ sectionheader }}
                 {{ term }}: {{ description }}
             </li>
