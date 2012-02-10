@@ -1,7 +1,13 @@
 (load "~~/lib/syntax-case")
 
+
+; Higher order functions
+;; Bind arguments to a function for delayed evaluation
 (define (curry f . c) (lambda x (apply f (append c x))))
+;; Reverse the order a function takes arguments
 (define (reverse-arguments f) (lambda a (apply f (reverse a))))
+;; Returns a function in which each function in fs is applied in reverse, with
+;; the output chained to the next
 (define (apply-f f . fs)
   (lambda x
     (let loop
@@ -10,31 +16,24 @@
       (if (null? rfs)
         (f current)
         (loop (cdr rfs) ((car rfs) current))))))
-
-(define (reduce f lst)
-  (let recur ((lst (cdr lst)) (acc (car lst)))
-    (if (null? lst) acc
-      (recur (cdr lst) (f (car lst) acc)))))
-
 (define (filter f lst)
   (let recur ((lst lst) (acc '()))
     (cond
       ((null? lst) (reverse acc))
       ((f (car lst)) (recur (cdr lst) (cons (car lst) acc)))
       (else (recur (cdr lst) acc)))))
-
 (define (any? f lst)
   (cond
     ((null? lst) #f)
     ((f (car lst)) #t)
     (else (any? f (cdr lst)))))
-
+;; Similar to any but operates on a list of truthy functions and one argument,
+;; returning true if any of the functions evaluate true when given the argument
 (define (any-f? arg fs)
   (cond
     ((null? fs) #f)
     (((car fs) arg) #t)
     (else (any-f? arg (cdr fs)))))
-
 (define (all? f lst)
   (cond
     ((null? lst) #t)
@@ -43,12 +42,14 @@
 (define (alist? lst)
   (all? pair? lst))
 
+; Macros
+;; Case that uses procedures for truth instead of matching
 (define-syntax case-cond
   (syntax-rules
     (else)
     ((_ e (c r) ... (else d))
      (cond ((c e) r) ... (else d)))))
-
+;; Chain functions on an initial argument
 (define-syntax ->>
   (syntax-rules
     ()
@@ -75,15 +76,16 @@
 (define (falsy? term)
   (not (truthy? term)))
 
+
+; Tag procedures
 (define opening-tag #\{)
 (define closing-tag #\})
-
 (define section-delimiter #\#)
 (define partial-delimiter #\>)
 (define inverted-delimiter #\^)
 (define closing-delimiter #\/)
 (define comment-delimiter #\!)
-
+(define self-node '|.|)
 ; Creates function to check if two delimiters are the same
 ; ((matches-delimiter? #\#) #\#) -> #t
 (define (matches-delimiter? d) (lambda (t) (eq? d t)))
@@ -128,28 +130,30 @@
 (define inverted-node? (matches-node? inverted-tag?))
 (define closing-node? (matches-node? closing-tag?))
 (define comment-node? (matches-node? comment-tag?))
+(define text-node? string?)
+(define self-node? (curry eq? self-node))
 
 
+; String procedures
 (define (strip-whitespace s)
   (->> s
        string->list
        (filter (apply-f not char-whitespace?))
        list->string))
 
+; Stream procedures
 (define (stream-ready? stream)
-  (char-ready? stream))
-
+  (and 
+    (char-ready? stream)
+    (not (eof-object? (peek-char stream)))))
 (define (read-successful? stream f)
   (and 
     (stream-ready? stream) 
     (f (peek-char stream))))
-
 (define (at-tag? tag stream)
   (read-successful? stream (curry eq? tag)))
-
 (define at-opening-tag? (curry at-tag? opening-tag))
 (define at-closing-tag? (curry at-tag? closing-tag))
-
 (define (read-until stream f)
   (let ((output (open-string)))
     (let recur ()
@@ -160,28 +164,25 @@
           (begin
             (write-char (read-char stream) output)
             (recur)))))))
-
 (define (read-until-char stream char)
   (read-until stream (curry eq? char)))
-
 (define (sread-until-char stream char)
   (get-output-string (read-until-char stream char)))
-
 (define (read-next stream f)
   (if (read-successful? stream f)
     (read-char stream) #f))
-
 (define (read-past stream f)
-  (let* ((before (read-until stream f))
+  (let ((before (read-until stream f))
          (next (read-next stream f)))
     (if next 
       (begin
         (write-char next before) before)
       before)))
-
 (define (read-past-char stream char)
   (read-past stream (curry eq? char)))
 
+; Parsing
+;; Create a tag pair from a tag string
 (define (classify-token token)
   (let ((tsymbol (string->symbol token))
         (first-char 
@@ -204,7 +205,8 @@
                 comment-delimiter?))
       (cons first-char esymbol)
       tsymbol)))
-
+;; Parse a token
+;; TODO: this needs to be reworked to accept arbitrary delimiters
 (define (parse-token stream)
   (begin
     (read-past-char stream opening-tag)
@@ -217,7 +219,7 @@
       (read-past-char stream closing-tag)
       (read-past-char stream closing-tag)
       token)))
-
+;; Create a parse tree
 (define (parse-section stream key)
   (let recur ((tree '()))
     (cond
@@ -244,20 +246,14 @@
       (else 
         (recur
           (cons (sread-until-char stream opening-tag) tree))))))
-
 (define (parse stream)
   (parse-section stream #f))
 
-(define self-node '|.|)
-(define (get-assoc elem alist)
-  (cadr (assoc elem alist)))
-(define text-node? string?)
-(define self-node? (curry eq? self-node))
+; Procedures for dealing with contexts
 (define (make-list lst)
   (if (list? lst)
     lst
     `((,self-node ,lst))))
-
 (define (get-alist-item fn alist)
   (and
     (list? alist)
@@ -265,26 +261,19 @@
     (fn (car alist))))
 (define get-alist-key (curry get-alist-item car))
 (define get-alist-value (curry get-alist-item cadr))
-
 (define (get-alist-assoc fn key alist)
   (and
     (alist? alist)
     (pair? (assoc key alist))
     (fn (assoc key alist))))
 (define get-alist-avalue (curry get-alist-assoc cadr))
-
 (define get-alist-arest (curry get-alist-assoc cdr))
-
-
 (define (create-subcontext context key)
-  (map 
-    (curry (reverse-arguments append) context)
-    (map
-      make-list 
-      (filter 
-        truthy? 
-        (or (get-alist-arest key context) '())))))
+  (map (curry (reverse-arguments append) context)
+       (map make-list
+            (filter truthy? (or (get-alist-arest key context) '())))))
 
+; Render a tree with a given context
 (define (render tree context)
   (let loop ((elems tree) (rest '()) (current-context context))
     (if (falsy? elems)
@@ -329,6 +318,9 @@
                 (loop remaining (cons node-value rest) current-context)
                 (loop remaining rest current-context)))))))))
 
+(define (render-file filename context)
+  (render (parse (open-input-file filename)) context))
+
 (define test-string
   (open-string 
 "<html>
@@ -340,6 +332,7 @@
         <ul>
             {{ #list }}
             <li>
+                {{ !this-is-the-header }}
                 {{ sectionheader }}
                 {{ term }}: {{ description }}
             </li>
@@ -367,24 +360,10 @@
 (println (render tree context))
 
 
-(define t2 
-  (parse (open-string "hello {{ #more }} {{ . }} {{ #sub }} {{ name }} {{ /sub }} {{ /more }} {{ label }}")))
-(define c2
-  '((label "maybe")
-    (more
-      "1" "2" "3")
-    (sub
-      ((name "a"))
-      ((name "b"))
-      ((name "c")))))
-
-(println (render t2 c2))
-
 (define t3 
   (parse (open-string 
 " hello
 {{ !ignore-this-please }}
-{{ >t2 }}
 {{ #person }}
 {{ name }} 
    {{ #friends }}
@@ -394,7 +373,6 @@
    {{/person }}
    {{/friends }}
 {{/person }}")))
-
 (define c3
   '((person
       ((name "rich")
