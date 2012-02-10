@@ -82,21 +82,52 @@
 (define partial-delimiter #\>)
 (define inverted-delimiter #\^)
 (define closing-delimiter #\/)
-(define (matches-delimiter? t) (lambda (o) (eq? t o)))
+(define comment-delimiter #\!)
+
+; Creates function to check if two delimiters are the same
+; ((matches-delimiter? #\#) #\#) -> #t
+(define (matches-delimiter? d) (lambda (t) (eq? d t)))
+; Cases based on known delimiters
 (define section-delimiter? (matches-delimiter? section-delimiter))
 (define partial-delimiter? (matches-delimiter? partial-delimiter))
 (define inverted-delimiter? (matches-delimiter? inverted-delimiter))
 (define closing-delimiter? (matches-delimiter? closing-delimiter))
+(define comment-delimiter? (matches-delimiter? comment-delimiter))
+; Tag is a cons pair ( delimiter . label )
 (define get-tag-delimiter car)
 (define get-tag-label cdr)
-(define (matches-tag? t) 
-  (lambda (o)
-    (and (pair? o) (eq? t (get-tag-delimiter o)))))
-(define section-tag? (matches-tag? section-delimiter))
-(define partial-tag? (matches-tag? partial-delimiter))
-(define inverted-tag? (matches-tag? inverted-delimiter))
-(define closing-tag? (matches-tag? closing-delimiter))
-
+; Creates a function to check whether tag delimiters match, given a
+; function derived from (matches-delimiter? ...)
+; ((matches-tag? (matches-delimiter? #\#)) (cons #\# 'label)) -> #t
+(define (matches-tag? fn) 
+  (lambda (t)
+    (and (pair? t) (fn (get-tag-delimiter t)))))
+(define section-tag? (matches-tag? section-delimiter?))
+(define partial-tag? (matches-tag? partial-delimiter?))
+(define inverted-tag? (matches-tag? inverted-delimiter?))
+(define closing-tag? (matches-tag? closing-delimiter?))
+(define comment-tag? (matches-tag? comment-delimiter?))
+; Node is a cons pair ( tag . subtree )
+; Creates a function to check whether node tags match, given a
+; function derived from (matches-tag? ...)
+; ((matches-node?
+;   (matches-tag?
+;     (matches-delimiter? #\#)))
+; (cons (cons #\# 'label) '("tree" "elements"))) -> #t
+(define get-node-tag car)
+(define get-node-tree cdr)
+(define (get-node-delimiter n)
+  (get-tag-delimiter (get-node-tag n)))
+(define (get-node-label n)
+  (get-tag-label (get-node-tag n)))
+(define (matches-node? fn)
+  (lambda (n)
+    (and (pair? n) (fn (get-node-tag n)))))
+(define section-node? (matches-node? section-tag?))
+(define partial-node? (matches-node? partial-tag?))
+(define inverted-node? (matches-node? inverted-tag?))
+(define closing-node? (matches-node? closing-tag?))
+(define comment-node? (matches-node? comment-tag?))
 
 
 (define (strip-whitespace s)
@@ -169,7 +200,8 @@
           (list section-delimiter?
                 partial-delimiter?
                 inverted-delimiter?
-                closing-delimiter?))
+                closing-delimiter?
+                comment-delimiter?))
       (cons first-char esymbol)
       tsymbol)))
 
@@ -191,17 +223,22 @@
     (cond
       ((not (stream-ready? stream))
        (if key 
-         (list key (reverse tree))
+         (cons key (reverse tree))
          (reverse tree)))
       ((at-opening-tag? stream)
        (let ((tag (classify-token (parse-token stream))))
          (case-cond tag
+           (comment-tag?
+             (recur tree))
            (section-tag? 
              (recur 
                (cons (parse-section stream tag) tree)))
+           (inverted-tag?
+             (recur
+               (cons (parse-section stream tag) tree)))
            (closing-tag?
              (if (eq? (get-tag-label tag) (get-tag-label key))
-               (list key (reverse tree))
+               (cons key (reverse tree))
                (raise "Interpolated closing tags")))
            (else (recur (cons tag tree))))))
       (else 
@@ -215,7 +252,6 @@
 (define (get-assoc elem alist)
   (cadr (assoc elem alist)))
 (define text-node? string?)
-(define section-node? pair?)
 (define self-node? (curry eq? self-node))
 (define (make-list lst)
   (if (list? lst)
@@ -264,8 +300,8 @@
                (loop remaining (cons self-value rest) current-context)
                (loop remaining rest current-context))))
           ((section-node? node)
-           (let ((node-label (get-alist-key elems))
-                 (sub-elems (get-alist-value elems)))
+           (let ((node-label (get-node-label node))
+                 (sub-elems (get-node-tree node)))
              (if (and node-label sub-elems)
                (loop remaining
                      (append
@@ -273,6 +309,15 @@
                          (map (curry loop sub-elems '())
                               (create-subcontext current-context node-label)))
                        rest) current-context)
+               (loop remaining rest current-context))))
+          ((inverted-node? node)
+           (let* ((node-label (get-node-label node)) 
+                  (sub-elems (get-node-tree node))
+                  (node-value (get-alist-avalue node-label current-context)))
+             (if (not node-value)
+               (loop remaining
+                     (cons (render sub-elems current-context) rest)
+                     current-context)
                (loop remaining rest current-context))))
            (else
              (let ((node-value (get-alist-avalue node current-context)))
@@ -295,6 +340,9 @@
                 {{ term }}: {{ description }}
             </li>
             {{ /list }}
+            {{ ^lister }}
+                Negated
+            {{ /lister }}
         </ul>
         {{ #names }}{{ . }}, {{ /names }}
     </body>
@@ -312,8 +360,7 @@
        (description "A well thought out, fast, simple, embedded language")))
     (names "Frank" "John" "Peter")
     ))
-
-(print (render tree context))
+(println (render tree context))
 
 
 (define t2 
@@ -327,11 +374,12 @@
       ((name "b"))
       ((name "c")))))
 
-(print (render t2 c2))
+(println (render t2 c2))
 
 (define t3 
   (parse (open-string 
-"hello
+" hello
+{{ !ignore-this-please }}
 {{ #person }}
 {{ name }} 
    {{ #friends }}
@@ -366,6 +414,6 @@
             "dogpe"
             "jogpe")))))))
 
-(print (render t3 c3))
+(println (render t3 c3))
 
 
