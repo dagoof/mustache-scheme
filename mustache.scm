@@ -268,6 +268,14 @@
     (fn (assoc key alist))))
 (define get-alist-avalue (curry get-alist-assoc cadr))
 (define get-alist-arest (curry get-alist-assoc cdr))
+(define (in-proc-context? context)
+  (procedure? (get-alist-key context)))
+
+(define (create-proccontext context key)
+  (let ((proc (get-alist-avalue key context)))
+    (and (procedure? proc)
+         (cons (list proc proc) context))))
+
 (define (create-subcontext context key)
   (map (curry (reverse-arguments append) context)
        (map make-list
@@ -276,6 +284,7 @@
 ; Render a tree with a given context
 (define (render tree context)
   (let loop ((elems tree) (rest '()) (current-context context))
+    (trace loop)
     (if (falsy? elems)
       (apply string-append (reverse rest))
       (let ((node (car elems))
@@ -289,15 +298,19 @@
                (loop remaining (cons self-value rest) current-context)
                (loop remaining rest current-context))))
           ((section-node? node)
-           (let ((node-label (get-node-label node))
-                 (sub-elems (get-node-tree node)))
+           (let* ((node-label (get-node-label node))
+                 (sub-elems (get-node-tree node))
+                 (proc-context (create-proccontext current-context node-label)))
              (if (and node-label sub-elems)
-               (loop remaining
-                     (append
-                       (reverse
-                         (map (curry loop sub-elems '())
-                              (create-subcontext current-context node-label)))
-                       rest) current-context)
+               (if proc-context
+                 (loop remaining
+                       (cons (render sub-elems proc-context) rest) current-context)
+                 (loop remaining
+                       (append
+                         (reverse
+                           (map (curry loop sub-elems '())
+                                (create-subcontext current-context node-label)))
+                         rest) current-context))
                (loop remaining rest current-context))))
           ((inverted-node? node)
            (let* ((node-label (get-node-label node)) 
@@ -315,7 +328,12 @@
           (else
             (let ((node-value (get-alist-avalue node current-context)))
               (if node-value
-                (loop remaining (cons node-value rest) current-context)
+                (loop remaining
+                      (cons 
+                        (if (in-proc-context? current-context)
+                          ((get-alist-value current-context) node-value)
+                          node-value)
+                        rest) current-context)
                 (loop remaining rest current-context)))))))))
 
 (define (render-file filename context)
@@ -365,7 +383,9 @@
 " hello
 {{ !ignore-this-please }}
 {{ #person }}
+{{ #reversed }}
 {{ name }} 
+{{ /reversed }}
    {{ #friends }}
    {{ count }}
    {{ #person }}
@@ -374,29 +394,26 @@
    {{/friends }}
 {{/person }}")))
 (define c3
-  '((person
-      ((name "rich")
+  `((person
+      ((name "name a")
        (friends
          ((count "2")
           (person 
-            "frank"
-            "john"))))
-      ((name "ramin")
+            "friend a"
+            "friend b"))))
+      ((name "name b")
        (friends
          ((count "3")
           (person
-            "goondor"
-            "menthol"
-            "birds"))))
-      ((name "shoe")
+            "friend c"
+            "friend d"
+            "friend e"))))
+      ((name "name c")
        (friends
-         ((count "5")
+         ((count "1")
           (person
-            "laces"
-            "toes"
-            "frogpe"
-            "dogpe"
-            "jogpe")))))))
+            "friend f")))))
+    (reversed ,(apply-f list->string reverse string->list))
+    ))
 
 (println (render t3 c3))
-
