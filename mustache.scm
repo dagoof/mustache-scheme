@@ -319,11 +319,15 @@
                      (cons (render sub-elems current-context) rest)
                      current-context)
                (loop remaining rest current-context))))
-           (else
-             (let ((node-value (get-alist-avalue node current-context)))
-               (if node-value
-                 (loop remaining (cons node-value rest) current-context)
-                 (loop remaining rest current-context)))))))))
+          ((partial-tag? node)
+           (loop remaining 
+                 (cons (render (eval (get-node-tree node)) current-context) rest)
+                 current-context))
+          (else
+            (let ((node-value (get-alist-avalue node current-context)))
+              (if node-value
+                (loop remaining (cons node-value rest) current-context)
+                (loop remaining rest current-context)))))))))
 
 (define test-string
   (open-string 
@@ -380,6 +384,7 @@
   (parse (open-string 
 " hello
 {{ !ignore-this-please }}
+{{ >t2 }}
 {{ #person }}
 {{ name }} 
    {{ #friends }}
@@ -389,6 +394,7 @@
    {{/person }}
    {{/friends }}
 {{/person }}")))
+
 (define c3
   '((person
       ((name "rich")
@@ -415,5 +421,4 @@
             "jogpe")))))))
 
 (println (render t3 c3))
-
 
