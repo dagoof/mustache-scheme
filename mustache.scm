@@ -1,6 +1,5 @@
 (load "~~/lib/syntax-case")
 
-
 ; Higher order functions
 ;; Bind arguments to a function for delayed evaluation
 (define (curry f . c) (lambda x (apply f (append c x))))
@@ -146,106 +145,85 @@
   (and 
     (char-ready? stream)
     (not (eof-object? (peek-char stream)))))
-(define (read-successful? stream f)
-  (and 
-    (stream-ready? stream) 
-    (f (peek-char stream))))
-(define (at-tag? tag stream)
-  (read-successful? stream (curry eq? tag)))
-(define at-opening-tag? (curry at-tag? opening-tag))
-(define at-closing-tag? (curry at-tag? closing-tag))
-(define (read-until stream f)
-  (let ((output (open-string)))
-    (let recur ()
-      (cond 
-        ((not (stream-ready? stream)) output)
-        ((read-successful? stream f) output)
+(define (read-until-string stream str)
+  (let ((output (open-string))
+        (target (string->list str)))
+    (let loop ((buf '()))
+      (trace loop)
+      (cond
+        ((equal? buf target)
+         (cons #t (get-output-string output)))
+        ((not (stream-ready? stream))
+         (do ((tbuf buf (cdr tbuf)))
+           ((null? tbuf) (cons #f (get-output-string output)))
+           (write-char (car tbuf) output)))
         (else
-          (begin
-            (write-char (read-char stream) output)
-            (recur)))))))
-(define (read-until-char stream char)
-  (read-until stream (curry eq? char)))
-(define (sread-until-char stream char)
-  (get-output-string (read-until-char stream char)))
-(define (read-next stream f)
-  (if (read-successful? stream f)
-    (read-char stream) #f))
-(define (read-past stream f)
-  (let ((before (read-until stream f))
-         (next (read-next stream f)))
-    (if next 
-      (begin
-        (write-char next before) before)
-      before)))
-(define (read-past-char stream char)
-  (read-past stream (curry eq? char)))
+          (if (< (length buf) (length target))
+            (loop (append buf (list (read-char stream))))
+            (begin
+              (write-char (car buf) output)
+              (loop (append (cdr buf) (list (read-char stream)))))))))))
 
 ; Parsing
 ;; Create a tag pair from a tag string
 (define (classify-token token)
-  (let ((tsymbol (string->symbol token))
-        (first-char 
-          (->> token
-               string->list
-               car))
-        (esymbol
-          (->>
-            token
-            string->list
-            cdr
-            list->string
-            string->symbol)))
-    (if (any-f? 
-          first-char
-          (list section-delimiter?
-                partial-delimiter?
-                inverted-delimiter?
-                closing-delimiter?
-                comment-delimiter?))
-      (cons first-char esymbol)
+  (let ((tsymbol (string->symbol token)))
+    (if (> (string-length token) 0)
+      (let ((first-char 
+              (->> token
+                   string->list
+                   car))
+            (esymbol
+              (->>
+                token
+                string->list
+                cdr
+                list->string
+                string->symbol))) 
+        (if (any-f? 
+              first-char
+              (list section-delimiter?
+                    partial-delimiter?
+                    inverted-delimiter?
+                    closing-delimiter?
+                    comment-delimiter?))
+          (cons first-char esymbol)
+          tsymbol))
       tsymbol)))
-;; Parse a token
-;; TODO: this needs to be reworked to accept arbitrary delimiters
-(define (parse-token stream)
-  (begin
-    (read-past-char stream opening-tag)
-    (read-past-char stream opening-tag)
-    (let ((token
-            (->>
-              (read-until-char stream closing-tag)
-              get-output-string
-              strip-whitespace)))
-      (read-past-char stream closing-tag)
-      (read-past-char stream closing-tag)
-      token)))
+
 ;; Create a parse tree
 (define (parse-section stream key)
-  (let recur ((tree '()))
-    (cond
-      ((not (stream-ready? stream))
-       (if key 
-         (cons key (reverse tree))
-         (reverse tree)))
-      ((at-opening-tag? stream)
-       (let ((tag (classify-token (parse-token stream))))
-         (case-cond tag
-           (comment-tag?
-             (recur tree))
-           (section-tag? 
-             (recur 
-               (cons (parse-section stream tag) tree)))
-           (inverted-tag?
-             (recur
-               (cons (parse-section stream tag) tree)))
-           (closing-tag?
-             (if (eq? (get-tag-label tag) (get-tag-label key))
-               (cons key (reverse tree))
-               (raise "Interpolated closing tags")))
-           (else (recur (cons tag tree))))))
-      (else 
-        (recur
-          (cons (sread-until-char stream opening-tag) tree))))))
+  (let recur ((tree '())
+              (at-tag #f))
+    (if (not (stream-ready? stream))
+      (if key
+        (cons key (reverse tree))
+        (reverse tree))
+      (if at-tag
+        (let* ((tag (read-until-string stream "}}")) 
+               (tag-status (car tag))
+               (tag-text (cdr tag)))
+          (if tag-status
+            (let ((token (classify-token (strip-whitespace tag-text))))
+              (case-cond token
+                (comment-tag?
+                  (recur tree #f))
+                (section-tag?
+                  (recur
+                    (cons (parse-section stream token) tree) #f))
+                (inverted-tag?
+                  (recur
+                    (cons (parse-section stream token) tree) #f))
+                (closing-tag?
+                  (if (eq? (get-tag-label token) (get-tag-label key))
+                    (cons key (reverse tree))
+                    (raise "Interpolated closing tags")))
+                (else (recur (cons token tree) #f))))
+            (recur (cons tag-text tree) #f)))
+        (let* ((tag (read-until-string stream "{{"))
+               (tag-status (car tag))
+               (tag-text (cdr tag)))
+          (recur (cons tag-text tree) tag-status))))))
 (define (parse stream)
   (parse-section stream #f))
 
@@ -335,7 +313,6 @@
                           node-value)
                         rest) current-context)
                 (loop remaining rest current-context)))))))))
-
 (define (render-file filename context)
   (render (parse (open-input-file filename)) context))
 
