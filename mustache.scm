@@ -26,6 +26,18 @@
     ((null? lst) #f)
     ((f (car lst)) #t)
     (else (any? f (cdr lst)))))
+(define (drop-while f lst)
+  (if (or (null? lst)
+          (not (f (car lst))))
+    lst
+    (drop-while f (cdr lst))))
+(define (take-while f lst)
+  (let recur ((lst lst) (acc '()))
+    (if (or
+          (null? lst)
+          (not (f (car lst))))
+      (reverse acc)
+      (recur (cdr lst) (cons (car lst) acc)))))
 ;; Similar to any but operates on a list of truthy functions and one argument,
 ;; returning true if any of the functions evaluate true when given the argument
 (define (any-f? arg fs)
@@ -77,13 +89,15 @@
 
 
 ; Tag procedures
-(define opening-tag #\{)
-(define closing-tag #\})
+(define opening-tag "{{")
+(define closing-tag "}}")
 (define section-delimiter #\#)
 (define partial-delimiter #\>)
 (define inverted-delimiter #\^)
 (define closing-delimiter #\/)
 (define comment-delimiter #\!)
+(define set-delimiter #\=)
+
 (define self-node '|.|)
 ; Creates function to check if two delimiters are the same
 ; ((matches-delimiter? #\#) #\#) -> #t
@@ -94,6 +108,8 @@
 (define inverted-delimiter? (matches-delimiter? inverted-delimiter))
 (define closing-delimiter? (matches-delimiter? closing-delimiter))
 (define comment-delimiter? (matches-delimiter? comment-delimiter))
+(define set-delimiter? (matches-delimiter? set-delimiter))
+
 ; Tag is a cons pair ( delimiter . label )
 (define get-tag-delimiter car)
 (define get-tag-label cdr)
@@ -108,6 +124,9 @@
 (define inverted-tag? (matches-tag? inverted-delimiter?))
 (define closing-tag? (matches-tag? closing-delimiter?))
 (define comment-tag? (matches-tag? comment-delimiter?))
+
+(define set-tag? (matches-tag? set-delimiter?))
+
 ; Node is a cons pair ( tag . subtree )
 ; Creates a function to check whether node tags match, given a
 ; function derived from (matches-tag? ...)
@@ -139,8 +158,19 @@
        string->list
        (filter (apply-f not char-whitespace?))
        list->string))
+(define (strip-edge-f fn str)
+  (->> str
+       string->list
+       (drop-while fn)
+       reverse
+       (drop-while fn)
+       reverse
+       list->string))
+(define strip-edge-whitespace 
+  (curry strip-edge-f char-whitespace?))
 
 ; Stream procedures
+
 (define (stream-ready? stream)
   (and 
     (char-ready? stream)
@@ -149,7 +179,6 @@
   (let ((output (open-string))
         (target (string->list str)))
     (let loop ((buf '()))
-      (trace loop)
       (cond
         ((equal? buf target)
          (cons #t (get-output-string output)))
@@ -165,67 +194,99 @@
               (loop (append (cdr buf) (list (read-char stream)))))))))))
 
 ; Parsing
+;; Is a string surrounded in set delimiters?
+(define (set-delimiters? str)
+  (let* ((stripped (strip-edge-whitespace str))
+         (stripped-list (string->list stripped)))
+    (and (set-delimiter? (car stripped-list))
+         (set-delimiter? (car (reverse stripped-list)))
+         (any? char-whitespace? stripped-list))))
+;; Parse new opening and closing tags from a set delimiter string
+(define (make-set-delimiters str)
+  (let* ((stripped
+           (strip-edge-f set-delimiter? (strip-edge-whitespace str)))
+         (stripped-list (string->list stripped)))
+    (cons (list->string
+            (take-while
+              (apply-f not char-whitespace?)
+              stripped-list))
+          (list->string
+            (reverse
+              (take-while
+                (apply-f not char-whitespace?)
+                (reverse stripped-list)))))))
 ;; Create a tag pair from a tag string
 (define (classify-token token)
-  (let ((tsymbol (string->symbol token)))
+  (let ((tsymbol 
+          (string->symbol (strip-whitespace token)))
+        (ctoken (strip-edge-whitespace token)))
     (if (> (string-length token) 0)
       (let ((first-char 
-              (->> token
+              (->> ctoken
                    string->list
                    car))
             (esymbol
               (->>
-                token
+                ctoken
                 string->list
                 cdr
                 list->string
-                string->symbol))) 
-        (if (any-f? 
-              first-char
-              (list section-delimiter?
-                    partial-delimiter?
-                    inverted-delimiter?
-                    closing-delimiter?
-                    comment-delimiter?))
-          (cons first-char esymbol)
-          tsymbol))
-      tsymbol)))
+                string->symbol)))
+        (cond
+          ((set-delimiters? ctoken)
+           (cons first-char (make-set-delimiters ctoken)))
+          ((any-f? 
+             first-char
+             (list section-delimiter?
+                   partial-delimiter?
+                   inverted-delimiter?
+                   closing-delimiter?
+                   comment-delimiter?))
+           (cons first-char esymbol))
+          (else tsymbol)))
+        tsymbol)))
 
 ;; Create a parse tree
-(define (parse-section stream key)
-  (let recur ((tree '())
+(define (parse-section openingd closingd stream key)
+  (let recur ((openingd openingd)
+              (closingd closingd)
+              (tree '())
               (at-tag #f))
-    (if (not (stream-ready? stream))
-      (if key
-        (cons key (reverse tree))
-        (reverse tree))
-      (if at-tag
-        (let* ((tag (read-until-string stream "}}")) 
-               (tag-status (car tag))
-               (tag-text (cdr tag)))
-          (if tag-status
-            (let ((token (classify-token (strip-whitespace tag-text))))
-              (case-cond token
-                (comment-tag?
-                  (recur tree #f))
-                (section-tag?
-                  (recur
-                    (cons (parse-section stream token) tree) #f))
-                (inverted-tag?
-                  (recur
-                    (cons (parse-section stream token) tree) #f))
-                (closing-tag?
-                  (if (eq? (get-tag-label token) (get-tag-label key))
-                    (cons key (reverse tree))
-                    (raise "Interpolated closing tags")))
-                (else (recur (cons token tree) #f))))
-            (recur (cons tag-text tree) #f)))
-        (let* ((tag (read-until-string stream "{{"))
-               (tag-status (car tag))
-               (tag-text (cdr tag)))
-          (recur (cons tag-text tree) tag-status))))))
+    (let ((parse-subsection (curry parse-section openingd closingd))
+          (next (curry recur openingd closingd)))
+      (if (not (stream-ready? stream))
+        (if key
+          (cons key (reverse tree))
+          (reverse tree))
+        (if at-tag
+          (let* ((tag (read-until-string stream closingd)) 
+                 (tag-status (car tag))
+                 (tag-text (cdr tag)))
+            (if tag-status
+              (let ((token (classify-token tag-text)))
+                (case-cond token
+                  (set-tag?
+                    (recur (cadr token) (cddr token) tree #f))
+                  (comment-tag?
+                    (next tree #f))
+                  (section-tag?
+                    (next
+                      (cons (parse-subsection stream token) tree) #f))
+                  (inverted-tag?
+                    (next
+                      (cons (parse-subsection stream token) tree) #f))
+                  (closing-tag?
+                    (if (eq? (get-tag-label token) (get-tag-label key))
+                      (cons key (reverse tree))
+                      (raise "Interpolated closing tags")))
+                  (else (next (cons token tree) #f))))
+              (next (cons tag-text tree) #f)))
+          (let* ((tag (read-until-string stream openingd))
+                 (tag-status (car tag))
+                 (tag-text (cdr tag)))
+            (next (cons tag-text tree) tag-status)))))))
 (define (parse stream)
-  (parse-section stream #f))
+  (parse-section opening-tag closing-tag stream #f))
 
 ; Procedures for dealing with contexts
 (define (make-list lst)
@@ -262,7 +323,6 @@
 ; Render a tree with a given context
 (define (render tree context)
   (let loop ((elems tree) (rest '()) (current-context context))
-    (trace loop)
     (if (falsy? elems)
       (apply string-append (reverse rest))
       (let ((node (car elems))
@@ -352,6 +412,7 @@
        (description "A well thought out, fast, simple, embedded language")))
     (names "Frank" "John" "Peter")
     ))
+
 (println (render tree context))
 
 
@@ -370,6 +431,7 @@
    {{/person }}
    {{/friends }}
 {{/person }}")))
+
 (define c3
   `((person
       ((name "name a")
